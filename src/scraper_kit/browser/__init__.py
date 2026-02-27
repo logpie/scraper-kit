@@ -6,3 +6,4 @@ from .chrome import find_system_chrome, launch_cdp_browser, kill_stale_cdp  # no
 from .cookies import migrate_cookies  # noqa: F401
 from .stealth import build_stealth_shim, inject_stealth, setup_cdp_stealth  # noqa: F401
 from .ua import get_chromium_version, build_user_agent  # noqa: F401
+from .session import open_browser  # noqa: F401

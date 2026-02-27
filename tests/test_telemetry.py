@@ -102,16 +102,11 @@ def test_golden_roundtrip():
         with open(os.path.join(tmpdir, files[0])) as f:
             events = [json.loads(line) for line in f]
 
-        assert len(events) == 4
-        event_types = [e["event"] for e in events]
-        assert event_types == ["search_start", "card_attempt", "card_result", "search_end"]
-        # run_end is the 5th line but we only logged 4 events... wait, we logged 4
-        # Actually we logged: search_start, card_attempt, card_result, search_end, run_end = 5
-        # Let me re-read
-        with open(os.path.join(tmpdir, files[0])) as f:
-            events = [json.loads(line) for line in f]
         assert len(events) == 5
-        assert events[4]["event"] == "run_end"
+        event_types = [e["event"] for e in events]
+        assert event_types == [
+            "search_start", "card_attempt", "card_result", "search_end", "run_end",
+        ]
 
         # All events have site field
         for e in events:
