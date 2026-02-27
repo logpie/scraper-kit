@@ -12,6 +12,7 @@ Key differences from the XHS-specific PassiveTap:
 import logging
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +101,8 @@ class PassiveTap:
                 return
 
             note_id = self._adapter.extract_note_id_from_api(data_type, parsed)
+            if not note_id and data_type == "comments":
+                note_id = self._extract_note_id_from_url(response.url)
             if not note_id:
                 log.debug(f"PassiveTap: no note_id from {data_type} response")
                 return
@@ -135,6 +138,22 @@ class PassiveTap:
         if oldest_id:
             data_dict.pop(oldest_id, None)
             self._timestamps.pop(oldest_id, None)
+
+    @staticmethod
+    def _extract_note_id_from_url(url: str) -> str:
+        """Extract note_id from URL query params (fallback for comments)."""
+        try:
+            params = parse_qs(urlparse(url).query)
+        except Exception:
+            return ""
+        for key in ("note_id", "aweme_id", "item_id"):
+            values = params.get(key)
+            if not values:
+                continue
+            for v in values:
+                if v:
+                    return str(v)
+        return ""
 
     @staticmethod
     def _merge_comments(existing: list[dict], incoming: list) -> list[dict]:

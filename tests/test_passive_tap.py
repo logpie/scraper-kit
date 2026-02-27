@@ -153,3 +153,53 @@ def test_passive_tap_buffer_limit():
         tap._on_response(resp)
 
     assert len(tap._feed_data) <= _MAX_BUFFER_SIZE
+
+
+def test_passive_tap_extract_note_id_from_url():
+    """URL-based note_id extraction for comments fallback."""
+    assert PassiveTap._extract_note_id_from_url(
+        "https://example.com/api/comments?note_id=abc123&cursor=0"
+    ) == "abc123"
+    assert PassiveTap._extract_note_id_from_url(
+        "https://example.com/api/comments?aweme_id=789"
+    ) == "789"
+    assert PassiveTap._extract_note_id_from_url(
+        "https://example.com/api/comments?item_id=456"
+    ) == "456"
+    assert PassiveTap._extract_note_id_from_url(
+        "https://example.com/api/comments?cursor=0"
+    ) == ""
+    assert PassiveTap._extract_note_id_from_url("not-a-url") == ""
+    # Repeated params with empty first value
+    assert PassiveTap._extract_note_id_from_url(
+        "https://example.com/api?aweme_id=&aweme_id=123"
+    ) == "123"
+
+
+def test_passive_tap_comments_url_fallback():
+    """When extract_note_id_from_api returns '', use URL params as fallback."""
+    page = MagicMock()
+
+    class FallbackAdapter:
+        def get_api_routes(self):
+            return {"/api/comments": self._parse_comments}
+
+        def extract_note_id_from_api(self, data_type, data):
+            return ""  # Always returns empty — simulates comments with no note_id
+
+        def _parse_comments(self, body):
+            return "comments", body.get("comments", [])
+
+    adapter = FallbackAdapter()
+    tap = PassiveTap(page, adapter)
+    tap.start()
+
+    resp = _make_response(
+        "https://example.com/api/comments?aweme_id=note999",
+        body={"comments": [{"id": "c1", "text": "hello"}]},
+    )
+    tap._on_response(resp)
+
+    comments = tap.get_comments("note999")
+    assert len(comments) == 1
+    assert comments[0]["text"] == "hello"
