@@ -23,7 +23,8 @@ def fetch_posts(adapter, keyword: str, *,
                 max_age_days: int = 99999,
                 analysis_window: str = "any",
                 strategy: str = "hybrid",
-                event_logger=None) -> list[dict]:
+                event_logger=None,
+                failure_bundle_verbosity: str = "off") -> list[dict]:
     """Fetch posts using the given adapter and browser session.
 
     This is the scraper-kit layer entry point. It requires an already-open
@@ -56,6 +57,7 @@ def fetch_posts(adapter, keyword: str, *,
             grind=grind, max_age_days=max_age_days,
             analysis_window=analysis_window,
             event_logger=event_logger,
+            failure_bundle_verbosity=failure_bundle_verbosity,
         )
     else:
         # Other strategies can be added here. For now, hybrid is the
@@ -68,6 +70,7 @@ def fetch_posts(adapter, keyword: str, *,
             grind=grind, max_age_days=max_age_days,
             analysis_window=analysis_window,
             event_logger=event_logger,
+            failure_bundle_verbosity=failure_bundle_verbosity,
         )
 
     # Tag all posts with strategy

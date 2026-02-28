@@ -113,3 +113,34 @@ def test_golden_roundtrip():
             assert e["site"] == "xhs"
             assert "ts" in e
             assert "run_id" in e
+
+
+def test_failure_dump_event():
+    """log_failure_dump() writes correct event structure."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with FetchEventLogger("run_fd", "kw", log_dir=tmpdir, site="douyin") as logger:
+            logger.set_search_term("kw")
+            logger.log_failure_dump(
+                note_id="note123",
+                reason="empty_content",
+                tap_has_feed=False,
+                tap_has_comments=True,
+                page_url="https://example.com/post/123",
+                total_elapsed=3.5,
+                bundle_path="/tmp/bundle.json",
+            )
+
+        files = os.listdir(tmpdir)
+        with open(os.path.join(tmpdir, files[0])) as f:
+            event = json.loads(f.readline())
+
+        assert event["event"] == "failure_dump"
+        assert event["note_id"] == "note123"
+        assert event["reason"] == "empty_content"
+        assert event["tap_has_feed"] is False
+        assert event["tap_has_comments"] is True
+        assert event["page_url"] == "https://example.com/post/123"
+        assert event["total_elapsed"] == 3.5
+        assert event["bundle_path"] == "/tmp/bundle.json"
+        assert event["site"] == "douyin"
+        assert event["search_term"] == "kw"

@@ -144,6 +144,21 @@ class FetchEventLogger:
             "duration": duration,
         })
 
+    def log_failure_dump(self, note_id: str, reason: str, tap_has_feed: bool,
+                         tap_has_comments: bool, page_url: str,
+                         total_elapsed: float, bundle_path: str):
+        self._write({
+            "event": "failure_dump",
+            "search_term": self._current_search_term,
+            "note_id": note_id,
+            "reason": reason,
+            "tap_has_feed": tap_has_feed,
+            "tap_has_comments": tap_has_comments,
+            "page_url": page_url,
+            "total_elapsed": total_elapsed,
+            "bundle_path": bundle_path,
+        })
+
     def log_run_end(self, search_terms: list[str], total_fetched: int, total_skipped: int,
                     total_failed: int, total_analyzed: int, total_seen: int,
                     duration: float, git: str = "", status: str = "ok"):

@@ -11,6 +11,7 @@ Key differences from the XHS-specific PassiveTap:
 """
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -18,6 +19,15 @@ log = logging.getLogger(__name__)
 
 # Maximum entries per buffer to prevent memory leaks from unclaimed data.
 _MAX_BUFFER_SIZE = 100
+
+
+@dataclass
+class WaitResult:
+    """Result from PassiveTap.wait_for()."""
+    feed: dict | None = None
+    comments: list[dict] = field(default_factory=list)
+    timed_out: bool = False
+    elapsed: float = 0.0
 
 
 class PassiveTap:
@@ -75,6 +85,56 @@ class PassiveTap:
         """Check if captured data for note_id is stale (older than max_age seconds)."""
         ts = self._timestamps.get(note_id, 0)
         return (time.monotonic() - ts) > max_age if ts else False
+
+    def wait_for(
+        self,
+        note_id: str,
+        *,
+        need_feed: bool = True,
+        need_comments: bool = False,
+        timeout: float = 2.0,
+        poll_interval: int = 100,
+    ) -> WaitResult:
+        """Poll for passive API data, yielding to Playwright's event loop each tick.
+
+        Uses page.wait_for_timeout() internally — this processes Playwright's
+        event loop so _on_response callbacks fire. time.sleep() does NOT work.
+
+        Returns WaitResult with captured data and timing info.
+        """
+        start = time.monotonic()
+        deadline = start + timeout
+
+        while time.monotonic() < deadline:
+            # Check conditions
+            feed = self.get_feed(note_id) if need_feed else None
+            comments = self.get_comments(note_id) if need_comments else []
+            feed_ok = (not need_feed) or (feed is not None)
+            comments_ok = (not need_comments) or (len(comments) > 0)
+            if feed_ok and comments_ok:
+                return WaitResult(
+                    feed=feed,
+                    comments=comments,
+                    timed_out=False,
+                    elapsed=time.monotonic() - start,
+                )
+            # Yield to Playwright event loop, capping to remaining time
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            try:
+                self._page.wait_for_timeout(min(poll_interval, max(remaining_ms, 1)))
+            except Exception:
+                # Page may be closed/crashed — return best-effort data
+                break
+
+        # Final check after timeout (last tick may have delivered data)
+        feed = self.get_feed(note_id) if need_feed else None
+        comments = self.get_comments(note_id) if need_comments else []
+        return WaitResult(
+            feed=feed,
+            comments=comments,
+            timed_out=True,
+            elapsed=time.monotonic() - start,
+        )
 
     def _on_response(self, response):
         """Route intercepted responses to adapter-provided parsers."""

@@ -15,6 +15,7 @@ from ..filtering.card_filter import filter_cards
 from ..filtering.counting import fetch_count, count_for_limit, SKIP_REASONS
 from .passive_tap import PassiveTap
 from .health import HealthMonitor
+from .failure_bundle import BundleVerbosity, capture_failure_bundle, save_failure_bundle
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +35,37 @@ def build_post_from_card(card: dict, adapter) -> dict:
     }
 
 
+def _capture_and_log_bundle(page, tap, adapter, note_id, reason, keyword,
+                            total_elapsed, health_score, verbosity, screenshot_dir,
+                            event_logger):
+    """Best-effort failure bundle capture + telemetry. Never raises."""
+    if verbosity == BundleVerbosity.OFF:
+        return
+    try:
+        bundle = capture_failure_bundle(
+            page, tap, adapter, note_id, reason,
+            keyword=keyword, total_elapsed=total_elapsed,
+            health_score=health_score, verbosity=verbosity,
+            screenshot_dir=screenshot_dir,
+        )
+        bundle_path = save_failure_bundle(bundle)
+        if event_logger:
+            event_logger.log_failure_dump(
+                note_id=note_id, reason=reason,
+                tap_has_feed=bundle.tap_has_feed,
+                tap_has_comments=bundle.tap_has_comments,
+                page_url=bundle.page_url,
+                total_elapsed=total_elapsed,
+                bundle_path=bundle_path,
+            )
+    except Exception:
+        pass
+
+
 def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
-                               max_comments=10, search_url=""):
+                               max_comments=10, search_url="",
+                               failure_bundle_verbosity="off", keyword="",
+                               health_score=-1.0, event_logger=None):
     """Open detail → capture passive API data → DOM fallback → close detail.
 
     Returns (post_dict, is_captcha).
@@ -45,6 +75,7 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
     note_id = card["note_id"]
     tap.clear(note_id)
     captcha = False
+    _detail_start = time.time()
 
     try:
         # Open detail via adapter
@@ -52,6 +83,11 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
             post = build_post_from_card(card, adapter)
             post["card_only"] = True
             post["card_only_reason"] = "link_not_found"
+            _capture_and_log_bundle(
+                page, tap, adapter, note_id, "link_not_found", keyword,
+                time.time() - _detail_start, health_score,
+                failure_bundle_verbosity, screenshot_dir, event_logger,
+            )
             return post, False
 
         human_sleep(1.5, 3.0)  # wait for detail + API calls to fire
@@ -74,18 +110,14 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
         feed = tap.get_feed(note_id)
         api_comments = tap.get_comments(note_id)
         if not feed and not api_comments:
-            deadline = time.monotonic() + 1.2
-            while time.monotonic() < deadline:
-                time.sleep(0.1)
-                feed = tap.get_feed(note_id)
-                api_comments = tap.get_comments(note_id)
-                if feed or api_comments:
-                    break
+            result = tap.wait_for(note_id, need_feed=True, timeout=1.2)
+            feed = result.feed
+            api_comments = tap.get_comments(note_id)
         if feed and not api_comments:
-            deadline = time.monotonic() + 0.8
-            while time.monotonic() < deadline and not api_comments:
-                time.sleep(0.1)
-                api_comments = tap.get_comments(note_id)
+            result2 = tap.wait_for(
+                note_id, need_feed=False, need_comments=True, timeout=0.8,
+            )
+            api_comments = result2.comments
 
         # --- DOM extraction as fallback ---
         dom_data = adapter.extract_detail(page, card)
@@ -135,8 +167,14 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
             post["_data_source"] = "dom_fallback"
             content = post["content"]
             if not content:
+                fail_reason = "empty_content" if detail_loaded else "modal_timeout"
                 post["card_only"] = True
-                post["card_only_reason"] = "empty_content" if detail_loaded else "modal_timeout"
+                post["card_only_reason"] = fail_reason
+                _capture_and_log_bundle(
+                    page, tap, adapter, note_id, fail_reason, keyword,
+                    time.time() - _detail_start, health_score,
+                    failure_bundle_verbosity, screenshot_dir, event_logger,
+                )
             log.info(f"    {note_id}: DOM fallback ({len(content)} chars)")
 
         return post, captcha
@@ -144,6 +182,12 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
     except Exception as e:
         captcha = adapter.has_captcha(page)
         log.warning(f"    Hybrid detail failed for {note_id}: {e}")
+        reason = "" if captcha else ("modal_timeout" if "Timeout" in str(e) else "empty_content")
+        _capture_and_log_bundle(
+            page, tap, adapter, note_id, reason or "exception", keyword,
+            time.time() - _detail_start, health_score,
+            failure_bundle_verbosity, screenshot_dir, event_logger,
+        )
         try:
             adapter.close_detail(page, card)
         except Exception:
@@ -156,7 +200,6 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
                 pass
         post = build_post_from_card(card, adapter)
         post["card_only"] = True
-        reason = "" if captcha else ("modal_timeout" if "Timeout" in str(e) else "empty_content")
         post["card_only_reason"] = reason
         return post, captcha
 
@@ -164,7 +207,7 @@ def _fetch_post_detail_hybrid(page, card, tap, adapter, screenshot_dir,
 def strategy_hybrid(page, context, adapter, keyword, max_pages, sort,
                     screenshot_dir, max_posts, max_comments, seen_data,
                     grind=False, max_age_days=99999, analysis_window="any",
-                    event_logger=None):
+                    event_logger=None, failure_bundle_verbosity="off"):
     """Generic hybrid strategy: UI-driven clicks + passive API response interception.
 
     Adapter provides all site-specific interactions. The engine handles:
@@ -288,6 +331,11 @@ def strategy_hybrid(page, context, adapter, keyword, max_pages, sort,
                         health.record("captcha")
                         _health_event = "captcha"
                         _n_failed += 1
+                        _capture_and_log_bundle(
+                            page, tap, adapter, card.get("note_id", ""),
+                            "captcha", keyword, 0.0, health.score,
+                            failure_bundle_verbosity, screenshot_dir, event_logger,
+                        )
                     log.info(f"  [{i+1}/{len(fetch_cards)}]{trending_label} "
                              f"{card.get('title', '')[:40]} [skipped]")
                     _card_elapsed = time.time() - _card_start
@@ -295,6 +343,9 @@ def strategy_hybrid(page, context, adapter, keyword, max_pages, sort,
                     post, is_captcha = _fetch_post_detail_hybrid(
                         page, card, tap, adapter, screenshot_dir,
                         max_comments, search_url,
+                        failure_bundle_verbosity=failure_bundle_verbosity,
+                        keyword=keyword, health_score=health.score,
+                        event_logger=event_logger,
                     )
                     _card_elapsed = time.time() - _card_start
                     if is_captcha:
