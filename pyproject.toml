@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Reusable web scraping framework with adapter-based multi-site support"
 requires-python = ">=3.10"
 dependencies = [
-    "playwright",
+    "patchright",
 ]
 
 [build-system]
